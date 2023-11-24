@@ -1,13 +1,14 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"net/http"
 	"time"
 )
 
-type IWebServiceOption interface {
+type IWebOption interface {
 	TakeName() string
 	TakeHost() string
 	TakePort() int
@@ -17,22 +18,27 @@ type IWebServiceOption interface {
 
 type WebRouteFunc func(route *gin.Engine)
 
-func NewWebService(opt IWebServiceOption, route WebRouteFunc) *WebService {
-	return &WebService{
+func NewWeb(opt IWebOption, route WebRouteFunc) *Web {
+	return &Web{
 		handle: gin.New(),
 		opt:    opt,
 		routes: route,
 	}
 }
 
-type WebService struct {
+type Web struct {
 	handle *gin.Engine
-	opt    IWebServiceOption
+	opt    IWebOption
 	routes WebRouteFunc
+	server *http.Server
 }
 
-func (s WebService) Boot() error {
-	server := &http.Server{
+func (s *Web) Shutdown(ctx context.Context) error {
+	return s.server.Shutdown(ctx)
+}
+
+func (s *Web) Boot() error {
+	s.server = &http.Server{
 		Handler:      s.handle,
 		Addr:         fmt.Sprintf("%s:%d", s.opt.TakeHost(), s.opt.TakePort()),
 		ReadTimeout:  s.opt.TakeReadTimeout(),
@@ -40,5 +46,5 @@ func (s WebService) Boot() error {
 	}
 
 	s.routes(s.handle)
-	return server.ListenAndServe()
+	return s.server.ListenAndServe()
 }

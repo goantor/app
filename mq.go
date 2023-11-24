@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	mq "github.com/apache/rocketmq-clients/golang"
 	"github.com/goantor/rocket"
 	"github.com/goantor/x"
@@ -11,7 +13,7 @@ import (
 )
 
 type TaskName string
-type MQHandler func(ctx x.Context, body []byte, message *mq.MessageView) error
+type MQHandler func(ctx x.Context, message *mq.MessageView) error
 
 type MQHandleRegistry map[TaskName]MQHandler
 
@@ -24,7 +26,7 @@ func (r MQHandleRegistry) Take(name TaskName) (handle MQHandler, exists bool) {
 	return
 }
 
-type IMQService interface {
+type IMQ interface {
 	Register(name TaskName, handle MQHandler)
 	Boot() error
 }
@@ -38,34 +40,44 @@ type IMQConsumerOption interface {
 	TakeInvisibleDuration() time.Duration
 }
 
-type MqServiceConsumer struct {
-}
+////type MqConsumer struct {
+//}
 
 type MQConsumerHandler func(topic, group string, opt rocket.IOption) rocket.IConsumer
 
-type MQService struct {
+type MQ struct {
 	handlers IMQConsumerOptions
 	registry MQHandleRegistry
-	log      *logrus.Entry
+	log      *logrus.Logger
 }
 
-func (s MQService) checkLog() {
+func NewMQ(handlers IMQConsumerOptions, registry MQHandleRegistry, log *logrus.Logger) *MQ {
+	return &MQ{handlers: handlers, registry: registry, log: log}
+}
+
+func (s MQ) checkLog() {
 	if s.log == nil {
 		panic("mq service must has logrus.Entry log entity")
 	}
 }
 
-func (s MQService) Listen(consumer mq.SimpleConsumer, opt IMQConsumerOption) {
+func (s MQ) Listen(consumer mq.SimpleConsumer, opt IMQConsumerOption) {
 	var (
 		err          error
 		messageViews []*mq.MessageView
 	)
 
-	s.log.Infof("[mq service] consumer::receive starting...")
+	s.log.Infof("[mq service] %s consumer::receive starting...", opt.TakeTopic())
 	for {
-
 		messageViews, err = consumer.Receive(context.Background(), opt.TakeMaxMessageNum(), opt.TakeInvisibleDuration())
 		if err != nil {
+			var status *mq.ErrRpcStatus
+			if errors.As(err, &status) {
+				if status.GetCode() == 40401 {
+					continue
+				}
+			}
+
 			s.log.WithFields(logrus.Fields{
 				"topic": opt.TakeTopic(),
 				"group": opt.TakeGroup(),
@@ -78,10 +90,11 @@ func (s MQService) Listen(consumer mq.SimpleConsumer, opt IMQConsumerOption) {
 	}
 }
 
-func (s MQService) Accept(consumer mq.SimpleConsumer, messageViews []*mq.MessageView, opt IMQConsumerOption) {
+func (s MQ) Accept(consumer mq.SimpleConsumer, messageViews []*mq.MessageView, opt IMQConsumerOption) {
 	var err error
 	for _, messageView := range messageViews {
 		name := messageView.GetTag()
+		fmt.Printf("start %s task\n", *name)
 		if *name == "" {
 			s.log.WithFields(logrus.Fields{
 				"topic": opt.TakeTopic(),
@@ -91,29 +104,30 @@ func (s MQService) Accept(consumer mq.SimpleConsumer, messageViews []*mq.Message
 			_ = consumer.Ack(context.Background(), messageView)
 			continue
 		}
-
+		fmt.Printf("find %s task\n", *name)
+		fmt.Printf("registry items: %+v\n", s.registry)
 		if handle, exists := s.registry.Take(TaskName(*name)); exists {
-			ctx, data := s.makeContext(messageView)
-
+			ctx := s.makeContext(messageView)
+			fmt.Printf("do %s task\n", *name)
 			ctx.Info("[mq service] consumer::receive message handle start", x.H{
 				"topic":  opt.TakeTopic(),
 				"group":  opt.TakeGroup(),
 				"tag":    name,
-				"data":   string(data),
+				"data":   string(messageView.GetBody()),
 				"msg_id": messageView.GetMessageId(),
 			})
 
-			if err = handle(ctx, data, messageView); err != nil {
+			if err = handle(ctx, messageView); err != nil {
 				ctx.Error("[mq service] consumer::receive message handle failed", err, x.H{
 					"topic":  opt.TakeTopic(),
 					"group":  opt.TakeGroup(),
 					"tag":    name,
 					"err":    err,
-					"data":   string(data),
+					"data":   string(messageView.GetBody()),
 					"msg_id": messageView.GetMessageId(),
 				})
 			} else {
-				ctx.Info("[mq service] consumer::receive message handle finish", nil)
+				ctx.Info("[mq service] consumer::receive message handle finish\n", nil)
 			}
 		}
 
@@ -121,20 +135,19 @@ func (s MQService) Accept(consumer mq.SimpleConsumer, messageViews []*mq.Message
 	}
 }
 
-func (s MQService) makeContext(message *mq.MessageView) (ctx x.Context, data []byte) {
+func (s MQ) makeContext(message *mq.MessageView) (ctx x.Context) {
 	body := message.GetBody()
 	var js = struct {
-		Context x.IContextData `json:"context"`
-		Data    []byte         `json:"data"`
+		Context *x.ContextData `json:"context"`
 	}{}
 
 	_ = json.Unmarshal(body, &js)
 	log := x.NewLoggerWithData(s.log, js.Context)
-	return x.NewContext(log), js.Data
+	return x.NewContext(log)
 }
 
-func (s MQService) bootConsumer(handler IMQConsumerOption) {
-	for i := 0; i < 2; i++ {
+func (s MQ) bootConsumer(handler IMQConsumerOption) {
+	for i := 0; i <= handler.TakeNum(); i++ {
 		go s.Listen(
 			rocket.NewConsumer(handler.(rocket.IOption)).Connect(handler.TakeWait()),
 			handler,
@@ -142,10 +155,10 @@ func (s MQService) bootConsumer(handler IMQConsumerOption) {
 	}
 }
 
-func (s MQService) Boot() {
+func (s MQ) Boot() {
+	//os.
+	fmt.Printf("do handlers: %d", len(s.handlers))
 	for _, handler := range s.handlers {
-		for i := 0; i < handler.TakeNum(); i++ {
-			s.bootConsumer(handler)
-		}
+		s.bootConsumer(handler)
 	}
 }
