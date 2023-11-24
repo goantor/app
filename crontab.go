@@ -25,27 +25,27 @@ import (
 
 type TaskHandler func(ctx x.Context) error
 
-func NewTaskRoutes() TaskRoutes {
-	return make(TaskRoutes, 0)
+func NewTaskRoutes() CrontabRoutes {
+	return make(CrontabRoutes, 0)
 }
 
-type TaskRoutes []TaskRoute
+type CrontabRoutes []CrontabRoute
 
-func (o *TaskRoutes) Register(name string, handler TaskHandler, spec string) {
-	*o = append(*o, TaskRoute{
+func (o *CrontabRoutes) Register(name string, handler TaskHandler, spec string) {
+	*o = append(*o, CrontabRoute{
 		Name:    name,
 		Handler: handler,
 		Spec:    spec,
 	})
 }
 
-type TaskRoute struct {
+type CrontabRoute struct {
 	Name    string
 	Handler TaskHandler
 	Spec    string
 }
 
-func NewCrontab(opt cron.Option, log *logrus.Logger, routes ...TaskRoute) *Crontab {
+func NewCrontab(opt cron.Option, log *logrus.Logger, routes ...CrontabRoute) *Crontab {
 	return &Crontab{
 		cron:   cron.New(opt),
 		log:    log,
@@ -56,7 +56,7 @@ func NewCrontab(opt cron.Option, log *logrus.Logger, routes ...TaskRoute) *Cront
 type Crontab struct {
 	log    *logrus.Logger
 	cron   *cron.Cron
-	routes TaskRoutes
+	routes CrontabRoutes
 }
 
 func (c *Crontab) Shutdown(ctx context.Context) error {
@@ -72,7 +72,7 @@ func (c *Crontab) Register(name string, handler TaskHandler, spec string) {
 	c.routes.Register(name, handler, spec)
 }
 
-func (c *Crontab) Registers(routes TaskRoutes) {
+func (c *Crontab) Registers(routes CrontabRoutes) {
 	if !c.valid() {
 		c.routes = routes
 		return
@@ -83,7 +83,7 @@ func (c *Crontab) Registers(routes TaskRoutes) {
 	}
 }
 
-func (c *Crontab) makeHandler(route TaskRoute) (handle func()) {
+func (c *Crontab) makeHandler(route CrontabRoute) (handle func()) {
 	return func() {
 		ctx := x.NewContextWithLog(c.log)
 		if err := route.Handler(ctx); err != nil {

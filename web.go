@@ -18,7 +18,7 @@ type IWebOption interface {
 
 type WebRouteFunc func(route *gin.Engine)
 
-func NewWeb(opt IWebOption, route WebRouteFunc) *Web {
+func NewWeb(opt IWebOption, route WebRouteFunc) IService {
 	return &Web{
 		handle: gin.New(),
 		opt:    opt,
@@ -31,6 +31,10 @@ type Web struct {
 	opt    IWebOption
 	routes WebRouteFunc
 	server *http.Server
+}
+
+func (s *Web) TakeName() string {
+	return s.opt.TakeName()
 }
 
 func (s *Web) Shutdown(ctx context.Context) error {

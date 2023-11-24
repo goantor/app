@@ -31,8 +31,8 @@ type IMQ interface {
 	Boot() error
 }
 
-type IMQConsumerOptions []IMQConsumerOption
-type IMQConsumerOption interface {
+type IMQOptions []IMQOption
+type IMQOption interface {
 	rocket.IOption
 	TakeNum() int
 	TakeWait() time.Duration
@@ -40,19 +40,24 @@ type IMQConsumerOption interface {
 	TakeInvisibleDuration() time.Duration
 }
 
-////type MqConsumer struct {
-//}
-
 type MQConsumerHandler func(topic, group string, opt rocket.IOption) rocket.IConsumer
 
+func NewMQ(handlers IMQOptions, registry MQHandleRegistry, log *logrus.Logger) IService {
+	return &MQ{handlers: handlers, registry: registry, log: log}
+}
+
 type MQ struct {
-	handlers IMQConsumerOptions
+	handlers IMQOptions
 	registry MQHandleRegistry
 	log      *logrus.Logger
 }
 
-func NewMQ(handlers IMQConsumerOptions, registry MQHandleRegistry, log *logrus.Logger) *MQ {
-	return &MQ{handlers: handlers, registry: registry, log: log}
+func (s MQ) TakeName() string {
+	return "rocket"
+}
+
+func (s MQ) Shutdown(ctx context.Context) error {
+	return nil
 }
 
 func (s MQ) checkLog() {
@@ -61,7 +66,7 @@ func (s MQ) checkLog() {
 	}
 }
 
-func (s MQ) Listen(consumer mq.SimpleConsumer, opt IMQConsumerOption) {
+func (s MQ) Listen(consumer mq.SimpleConsumer, opt IMQOption) {
 	var (
 		err          error
 		messageViews []*mq.MessageView
@@ -90,11 +95,10 @@ func (s MQ) Listen(consumer mq.SimpleConsumer, opt IMQConsumerOption) {
 	}
 }
 
-func (s MQ) Accept(consumer mq.SimpleConsumer, messageViews []*mq.MessageView, opt IMQConsumerOption) {
+func (s MQ) Accept(consumer mq.SimpleConsumer, messageViews []*mq.MessageView, opt IMQOption) {
 	var err error
 	for _, messageView := range messageViews {
 		name := messageView.GetTag()
-		fmt.Printf("start %s task\n", *name)
 		if *name == "" {
 			s.log.WithFields(logrus.Fields{
 				"topic": opt.TakeTopic(),
@@ -104,8 +108,7 @@ func (s MQ) Accept(consumer mq.SimpleConsumer, messageViews []*mq.MessageView, o
 			_ = consumer.Ack(context.Background(), messageView)
 			continue
 		}
-		fmt.Printf("find %s task\n", *name)
-		fmt.Printf("registry items: %+v\n", s.registry)
+
 		if handle, exists := s.registry.Take(TaskName(*name)); exists {
 			ctx := s.makeContext(messageView)
 			fmt.Printf("do %s task\n", *name)
@@ -146,7 +149,7 @@ func (s MQ) makeContext(message *mq.MessageView) (ctx x.Context) {
 	return x.NewContext(log)
 }
 
-func (s MQ) bootConsumer(handler IMQConsumerOption) {
+func (s MQ) bootConsumer(handler IMQOption) {
 	for i := 0; i <= handler.TakeNum(); i++ {
 		go s.Listen(
 			rocket.NewConsumer(handler.(rocket.IOption)).Connect(handler.TakeWait()),
@@ -155,10 +158,10 @@ func (s MQ) bootConsumer(handler IMQConsumerOption) {
 	}
 }
 
-func (s MQ) Boot() {
-	//os.
-	fmt.Printf("do handlers: %d", len(s.handlers))
+func (s MQ) Boot() error {
 	for _, handler := range s.handlers {
 		s.bootConsumer(handler)
 	}
+
+	return nil
 }
