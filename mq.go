@@ -40,12 +40,12 @@ type IMQOption interface {
 
 type MQConsumerHandler func(topic, group string, opt rocket.IOption) rocket.IConsumer
 
-func NewMQ(handlers IMQOptions, registry MQHandleRegistry, log x.ILogger) IService {
-	return &MQ{handlers: handlers, registry: registry, log: log}
+func NewMQ(log x.ILogger, registry MQHandleRegistry, options ...IMQOption) IService {
+	return &MQ{options: options, registry: registry, log: log}
 }
 
 type MQ struct {
-	handlers IMQOptions
+	options  IMQOptions
 	registry MQHandleRegistry
 	log      x.ILogger
 }
@@ -64,15 +64,18 @@ func (s MQ) checkLog() {
 	}
 }
 
-func (s MQ) Listen(consumer mq.SimpleConsumer, opt IMQOption) {
+func (s MQ) Listen(opt IMQOption) {
 	var (
 		err          error
 		messageViews []*mq.MessageView
+		consumer     mq.SimpleConsumer
 	)
 
 	s.log.Info("[mq service] %s consumer::receive starting...", x.H{
 		"topic": opt.TakeTopic(),
 	})
+
+	consumer = rocket.NewConsumer(opt.(rocket.IOption)).Connect(opt.TakeWait())
 
 	for {
 		messageViews, err = consumer.Receive(context.Background(), opt.TakeMaxMessageNum(), opt.TakeInvisibleDuration())
@@ -155,18 +158,18 @@ func (s MQ) makeContext(message *mq.MessageView) (ctx x.Context) {
 	return
 }
 
-func (s MQ) bootConsumer(handler IMQOption) {
-	for i := 0; i <= handler.TakeNum(); i++ {
+func (s MQ) bootConsumer(option IMQOption) {
+	for i := 0; i <= option.TakeNum(); i++ {
 		go s.Listen(
-			rocket.NewConsumer(handler.(rocket.IOption)).Connect(handler.TakeWait()),
-			handler,
+
+			option,
 		)
 	}
 }
 
 func (s MQ) Boot() error {
-	for _, handler := range s.handlers {
-		s.bootConsumer(handler)
+	for _, option := range s.options {
+		s.bootConsumer(option)
 	}
 
 	return nil
