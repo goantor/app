@@ -131,7 +131,11 @@ func (s MQ) Accept(consumer mq.SimpleConsumer, messageViews []*mq.MessageView, o
 					"msg_id": messageView.GetMessageId(),
 				})
 			} else {
-				ctx.Info("[mq service] consumer::receive message handle finish\n", nil)
+				ctx.Info("[mq service] consumer::receive message handle finish\n", x.H{
+					"topic": opt.TakeTopic(),
+					"group": opt.TakeGroup(),
+					"tag":   name,
+				})
 			}
 		}
 
