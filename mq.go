@@ -4,67 +4,98 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	mq "github.com/apache/rocketmq-clients/golang"
 	"github.com/goantor/rocket"
 	"github.com/goantor/x"
+	"github.com/sirupsen/logrus"
 	"time"
 )
 
-type TaskName string
-type MQHandler func(ctx x.Context, message *mq.MessageView) error
+type MessageQueueHandler func(ctx x.Context, message *mq.MessageView) error
 
-type MQHandleRegistry map[TaskName]MQHandler
-
-func (r MQHandleRegistry) Register(name TaskName, handle MQHandler) {
-	r[name] = handle
+type IMessageQueueRoutes interface {
+	Register(name string, handle MessageQueueHandler)
+	Take(name string) (handle MessageQueueHandler)
 }
 
-func (r MQHandleRegistry) Take(name TaskName) (handle MQHandler, exists bool) {
-	handle, exists = r[name]
+type messageQueueRoutes struct {
+	routes map[string]MessageQueueHandler
+}
+
+func NewMessageQueueRoutes() IMessageQueueRoutes {
+	return &messageQueueRoutes{
+		routes: make(map[string]MessageQueueHandler),
+	}
+}
+
+func (r messageQueueRoutes) Register(name string, handle MessageQueueHandler) {
+	r.routes[name] = handle
+}
+
+func (r messageQueueRoutes) Take(name string) (handle MessageQueueHandler) {
+	var (
+		exists bool
+	)
+
+	handle, exists = r.routes[name]
+	if !exists {
+		panic(errors.New(fmt.Sprintf("route %s not found", name)))
+	}
+
 	return
 }
 
 type IMQ interface {
-	Register(name TaskName, handle MQHandler)
+	Register(name string, handle MessageQueueHandler)
 	Boot() error
 }
 
-type IMQOptions []IMQOption
-type IMQOption interface {
+type IMessageQueueOptions []IMessageQueueOption
+type IMessageQueueOption interface {
 	rocket.IOption
 	TakeNum() int
 	TakeWait() time.Duration
 	TakeMaxMessageNum() int32
 	TakeInvisibleDuration() time.Duration
+	ErrorRetry() bool
 }
 
-type MQConsumerHandler func(topic, group string, opt rocket.IOption) rocket.IConsumer
+type MessageQueueConsumerHandler func(topic, group string, opt rocket.IOption) rocket.IConsumer
 
-func NewMQ(log x.ILogger, registry MQHandleRegistry, options ...IMQOption) IService {
-	return &MQ{options: options, registry: registry, log: log}
-}
-
-type MQ struct {
-	options  IMQOptions
-	registry MQHandleRegistry
-	log      x.ILogger
-}
-
-func (s MQ) TakeName() string {
-	return "rocket"
-}
-
-func (s MQ) Shutdown(ctx context.Context) error {
-	return nil
-}
-
-func (s MQ) checkLog() {
-	if s.log == nil {
-		panic("mq service must has logrus.Entry log entity")
+func NewRocket(name string, log *logrus.Logger, registry IMessageQueueRoutes, options ...IMessageQueueOption) IService {
+	return &defaultRocket{
+		name:      name,
+		options:   options,
+		registry:  registry,
+		log:       x.NewLogger(log),
+		logSource: log,
 	}
 }
 
-func (s MQ) Listen(opt IMQOption) {
+type defaultRocket struct {
+	name      string
+	options   IMessageQueueOptions
+	registry  IMessageQueueRoutes
+	log       x.ILogger
+	logSource *logrus.Logger
+}
+
+func (s *defaultRocket) TakeName() string {
+	return s.name
+}
+
+func (s *defaultRocket) Shutdown(ctx context.Context) error {
+	return nil
+}
+
+func (s *defaultRocket) checkLog() {
+	if s.log == nil {
+		panic("mq service must has x.ILogger log Logger")
+	}
+}
+
+func (s *defaultRocket) Listen(opt IMessageQueueOption) {
 	var (
 		err          error
 		messageViews []*mq.MessageView
@@ -99,12 +130,11 @@ func (s MQ) Listen(opt IMQOption) {
 	}
 }
 
-func (s MQ) Accept(consumer mq.SimpleConsumer, messageViews []*mq.MessageView, opt IMQOption) {
+func (s *defaultRocket) Accept(consumer mq.SimpleConsumer, messageViews []*mq.MessageView, opt IMessageQueueOption) {
 	var err error
 	for _, messageView := range messageViews {
 		name := messageView.GetTag()
 		if *name == "" {
-
 			s.log.Error("[mq service] consumer::receive message without tag", errors.New("mq tag is nil"), x.H{
 				"topic": opt.TakeTopic(),
 				"group": opt.TakeGroup(),
@@ -114,60 +144,59 @@ func (s MQ) Accept(consumer mq.SimpleConsumer, messageViews []*mq.MessageView, o
 			continue
 		}
 
-		if handle, exists := s.registry.Take(TaskName(*name)); exists {
-			ctx := s.makeContext(messageView)
-			ctx.Info("[mq service] consumer::receive message handle start", x.H{
+		handler := s.registry.Take(*name)
+		ctx := s.makeContext(messageView)
+		ctx.Info("[mq service] consumer::receive message handler accept", x.H{
+			"topic":  opt.TakeTopic(),
+			"group":  opt.TakeGroup(),
+			"tag":    name,
+			"data":   string(messageView.GetBody()),
+			"msg_id": messageView.GetMessageId(),
+		})
+
+		if err = handler(ctx, messageView); err != nil {
+			ctx.Error("[mq service] consumer::receive message handler failed", err, x.H{
 				"topic":  opt.TakeTopic(),
 				"group":  opt.TakeGroup(),
 				"tag":    name,
+				"err":    err,
 				"data":   string(messageView.GetBody()),
 				"msg_id": messageView.GetMessageId(),
 			})
 
-			if err = handle(ctx, messageView); err != nil {
-				ctx.Error("[mq service] consumer::receive message handle failed", err, x.H{
-					"topic":  opt.TakeTopic(),
-					"group":  opt.TakeGroup(),
-					"tag":    name,
-					"err":    err,
-					"data":   string(messageView.GetBody()),
-					"msg_id": messageView.GetMessageId(),
-				})
-			} else {
-				ctx.Info("[mq service] consumer::receive message handle finish\n", x.H{
-					"topic": opt.TakeTopic(),
-					"group": opt.TakeGroup(),
-					"tag":   name,
-				})
+			if !opt.ErrorRetry() {
+				_ = consumer.Ack(context.Background(), messageView)
 			}
+			continue
 		}
 
-		_ = consumer.Ack(context.Background(), messageView)
+		ctx.Info("[mq service] consumer::receive message handler finish\n", x.H{
+			"topic": opt.TakeTopic(),
+			"group": opt.TakeGroup(),
+			"tag":   name,
+		})
 	}
 }
 
-func (s MQ) makeContext(message *mq.MessageView) (ctx x.Context) {
+func (s *defaultRocket) makeContext(message *mq.MessageView) (ctx x.Context) {
 	body := message.GetBody()
 	var js = struct {
 		Context *x.ContextData `json:"context"`
 	}{}
 
 	_ = json.Unmarshal(body, &js)
-	ctx = x.NewContext(s.log)
+	ctx = x.NewContextWithLog(s.logSource)
 	ctx.GiveContextData(js.Context)
 	return
 }
 
-func (s MQ) bootConsumer(option IMQOption) {
+func (s *defaultRocket) bootConsumer(option IMessageQueueOption) {
 	for i := 0; i <= option.TakeNum(); i++ {
-		go s.Listen(
-
-			option,
-		)
+		go s.Listen(option)
 	}
 }
 
-func (s MQ) Boot() error {
+func (s *defaultRocket) Boot() error {
 	for _, option := range s.options {
 		s.bootConsumer(option)
 	}
