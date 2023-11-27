@@ -131,6 +131,15 @@ func (s *defaultRocket) Listen(opt IMessageQueueOption) {
 }
 
 func (s *defaultRocket) Accept(consumer mq.SimpleConsumer, messageViews []*mq.MessageView, opt IMessageQueueOption) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.Error("[mq service] consumer::receive message handler panic", r.(error), x.H{
+				"topic": opt.TakeTopic(),
+				"group": opt.TakeGroup(),
+			})
+		}
+
+	}()
 	var err error
 	for _, messageView := range messageViews {
 		name := messageView.GetTag()
