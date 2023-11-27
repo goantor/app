@@ -9,8 +9,14 @@ import (
 	"github.com/goantor/rocket"
 	"github.com/goantor/x"
 	"github.com/sirupsen/logrus"
+	"os"
 	"time"
 )
+
+func CloseRocketLog() {
+	os.Setenv("mq.consoleAppender.enabled", "false")
+	os.Setenv("rocketmq.client.logLevel", "error")
+}
 
 type MessageQueueHandler func(ctx x.Context, message *mq.MessageView) error
 
