@@ -63,6 +63,15 @@ func (o *CrontabRoutes) bind(cron *cron.Cron, log *logrus.Logger) {
 
 func (o *CrontabRoutes) makeCronHandler(name string, route *CrontabRoute, log *logrus.Logger) (handle func()) {
 	return func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.WithFields(logrus.Fields{
+					"error": r,
+					"name":  name,
+				}).Error("crontab run failed")
+			}
+		}()
+
 		ctx := x.NewContextWithLog(log)
 		ctx.GiveService("crontab")
 		ctx.GiveModule(name)
@@ -174,15 +183,6 @@ func (c *Crontab) Registers(routes ICrontabRoutes) {
 }
 
 func (c *Crontab) Boot() (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			c.log.WithFields(logrus.Fields{
-				"error": r,
-			}).Error(fmt.Sprintf("[loop::%s] task found error", "crontab"))
-
-			c.cron.Start()
-		}
-	}()
 	c.routes.bind(c.cron, c.log)
 	c.cron.Start()
 
