@@ -39,8 +39,8 @@ type ICrontabRoutes interface {
 
 func NewCrontabRoutes() ICrontabRoutes {
 	return &CrontabRoutes{
-		routes: make(map[string]*CrontabRoute, 0),
-		loops:  make(map[string]*LoopRoute, 0),
+		routes: make(map[string]*CrontabRoute),
+		loops:  make(map[string]*LoopRoute),
 	}
 }
 
@@ -119,7 +119,9 @@ type LoopRoute struct {
 func (r LoopRoute) Run(log *logrus.Logger) {
 	defer func() {
 		if err := recover(); err != nil {
-			log.Error(fmt.Sprintf("[loop::%s] task found error", r.Name), err, nil)
+			log.WithFields(logrus.Fields{
+				"error": err,
+			}).Error(fmt.Sprintf("[loop::%s] task found error", r.Name))
 		}
 
 		r.Run(log)
@@ -172,6 +174,13 @@ func (c *Crontab) Registers(routes ICrontabRoutes) {
 }
 
 func (c *Crontab) Boot() (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.log.WithFields(logrus.Fields{
+				"error": r,
+			}).Error(fmt.Sprintf("[loop::%s] task found error", "crontab"))
+		}
+	}()
 	c.routes.bind(c.cron, c.log)
 	c.cron.Start()
 
