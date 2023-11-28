@@ -207,7 +207,7 @@ func (s *defaultRocket) makeContext(message *mq.MessageView) (ctx x.Context) {
 }
 
 func (s *defaultRocket) bootConsumer(option IMessageQueueOption) {
-	for i := 0; i <= option.TakeNum(); i++ {
+	for i := 0; i < option.TakeNum(); i++ {
 		go s.Listen(option)
 	}
 }
