@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	mq "github.com/apache/rocketmq-clients/golang"
+	"github.com/apache/rocketmq-clients/golang/credentials"
 	"github.com/goantor/rocket"
 	"github.com/goantor/x"
 	"github.com/sirupsen/logrus"
@@ -218,4 +219,58 @@ func (s *defaultRocket) Boot() error {
 	}
 
 	return nil
+}
+
+type Producer struct {
+	opt    IMessageQueueOption
+	source mq.Producer
+}
+
+func NewMessage(body []byte) *mq.Message {
+	return &mq.Message{Body: body}
+}
+
+func NewProducer(opt IMessageQueueOption) *Producer {
+	return &Producer{opt: opt}
+}
+
+func (c *Producer) makeOptions() []mq.ProducerOption {
+	return []mq.ProducerOption{
+		mq.WithTopics(c.opt.TakeTopic()),
+	}
+}
+
+func (c *Producer) Make() (product *Producer, err error) {
+	if c.source == nil {
+		config := &mq.Config{
+			Endpoint: c.opt.TakeEndpoint(),
+			Credentials: &credentials.SessionCredentials{
+				AccessKey:    c.opt.TakeAccessKey(),
+				AccessSecret: c.opt.TakeSecretKey(),
+			},
+		}
+
+		config.ConsumerGroup = c.opt.TakeGroup()
+		if c.source, err = mq.NewProducer(config, c.makeOptions()...); err != nil {
+			return
+		}
+	}
+
+	return c, c.source.Start()
+}
+
+func (c *Producer) Stop() {
+	_ = c.source.GracefulStop()
+}
+
+func (c *Producer) Push(ctx x.Context, message *mq.Message) ([]*mq.SendReceipt, error) {
+	if _, err := c.Make(); err != nil {
+		return nil, err
+	}
+
+	if message.Topic == "" {
+		message.Topic = c.opt.TakeTopic()
+	}
+
+	return c.source.Send(ctx.TakeContext(), message)
 }
