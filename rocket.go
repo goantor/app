@@ -16,6 +16,7 @@ import (
 func CloseRocketLog() {
 	os.Setenv("mq.consoleAppender.enabled", "false")
 	os.Setenv("rocketmq.client.logLevel", "error")
+	mq.ResetLogger()
 }
 
 type MessageQueueHandler func(ctx x.Context, message *mq.MessageView) error
