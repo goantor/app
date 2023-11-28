@@ -179,6 +179,8 @@ func (c *Crontab) Boot() (err error) {
 			c.log.WithFields(logrus.Fields{
 				"error": r,
 			}).Error(fmt.Sprintf("[loop::%s] task found error", "crontab"))
+
+			c.cron.Start()
 		}
 	}()
 	c.routes.bind(c.cron, c.log)
