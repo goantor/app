@@ -41,7 +41,7 @@ func (a *app) boot() {
 			pr.Green("Service %s start....", service.TakeName())
 			if err := service.Boot(); err != nil {
 				sig <- syscall.SIGINT
-				panic(err)
+				pr.Red("cancel service failed: %s\n", err.Error())
 			}
 		}(serv)
 	}
