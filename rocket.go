@@ -194,6 +194,8 @@ func (s *defaultRocket) Accept(consumer mq.SimpleConsumer, messageViews []*mq.Me
 			"group": opt.TakeGroup(),
 			"tag":   name,
 		})
+
+		_ = consumer.Ack(context.Background(), messageView)
 	}
 }
 
