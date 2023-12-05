@@ -7,6 +7,7 @@ import (
 	"fmt"
 	mq "github.com/apache/rocketmq-clients/golang"
 	"github.com/apache/rocketmq-clients/golang/credentials"
+	"github.com/goantor/pr"
 	"github.com/goantor/rocket"
 	"github.com/goantor/x"
 	"github.com/sirupsen/logrus"
@@ -110,7 +111,8 @@ func (s *defaultRocket) Listen(opt IMessageQueueOption) {
 		consumer     mq.SimpleConsumer
 	)
 
-	s.log.Info("[mq service] %s consumer::receive starting...", x.H{
+	pr.Yellow("rocket listen: %+v\n", opt)
+	s.log.Info("[mq service] consumer::receive starting...", x.H{
 		"topic": opt.TakeTopic(),
 	})
 
@@ -208,13 +210,16 @@ func (s *defaultRocket) makeContext(message *mq.MessageView) (ctx x.Context) {
 }
 
 func (s *defaultRocket) bootConsumer(option IMessageQueueOption) {
+	pr.Yellow("rocket bootConsumer: %+v\n", option)
 	for i := 0; i < option.TakeNum(); i++ {
 		go s.Listen(option)
 	}
 }
 
 func (s *defaultRocket) Boot() error {
+
 	for _, option := range s.options {
+		pr.Yellow("rocket boot: %+v\n", option)
 		s.bootConsumer(option)
 	}
 
