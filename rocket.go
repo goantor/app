@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	mq "github.com/apache/rocketmq-clients/golang"
@@ -21,7 +20,7 @@ func CloseRocketLog() {
 	mq.ResetLogger()
 }
 
-type MessageQueueHandler func(ctx x.Context, message *mq.MessageView) error
+type MessageQueueHandler func(ctx x.Context, message IMessage, msgId string) error
 
 type IMessageQueueRoutes interface {
 	Register(name string, handle MessageQueueHandler)
@@ -124,6 +123,7 @@ func (s *defaultRocket) Listen(opt IMessageQueueOption) {
 			var status *mq.ErrRpcStatus
 			if errors.As(err, &status) {
 				if status.GetCode() == 40401 {
+					time.Sleep(2 * time.Second)
 					continue
 				}
 			}
@@ -133,86 +133,81 @@ func (s *defaultRocket) Listen(opt IMessageQueueOption) {
 				"group": opt.TakeGroup(),
 			})
 
+			time.Sleep(2 * time.Second)
 			continue
 		}
 
-		go s.Accept(consumer, messageViews, opt)
+		for _, view := range messageViews {
+			go s.Accept(consumer, view, opt)
+		}
 	}
 }
 
-func (s *defaultRocket) Accept(consumer mq.SimpleConsumer, messageViews []*mq.MessageView, opt IMessageQueueOption) {
+func (s *defaultRocket) Accept(consumer mq.SimpleConsumer, messageView *mq.MessageView, opt IMessageQueueOption) {
 	defer func() {
 		if r := recover(); r != nil {
 			s.log.Error("[mq service] consumer::receive message handler panic", r.(error), x.H{
 				"topic": opt.TakeTopic(),
 				"group": opt.TakeGroup(),
 			})
-		}
-
-	}()
-	var err error
-	for _, messageView := range messageViews {
-		name := messageView.GetTag()
-		if *name == "" {
-			s.log.Error("[mq service] consumer::receive message without tag", errors.New("mq tag is nil"), x.H{
-				"topic": opt.TakeTopic(),
-				"group": opt.TakeGroup(),
-			})
 
 			_ = consumer.Ack(context.Background(), messageView)
-			continue
 		}
+	}()
 
-		handler := s.registry.Take(*name)
-		ctx := s.makeContext(messageView)
-		ctx.Info("[mq service] consumer::receive message handler accept", x.H{
-			"topic":  opt.TakeTopic(),
-			"group":  opt.TakeGroup(),
-			"tag":    name,
-			"data":   string(messageView.GetBody()),
-			"msg_id": messageView.GetMessageId(),
-		})
-
-		if err = handler(ctx, messageView); err != nil {
-			ctx.Error("[mq service] consumer::receive message handler failed", err, x.H{
-				"topic":  opt.TakeTopic(),
-				"group":  opt.TakeGroup(),
-				"tag":    name,
-				"err":    err,
-				"data":   string(messageView.GetBody()),
-				"msg_id": messageView.GetMessageId(),
-			})
-
-			if !opt.ErrorRetry() {
-				_ = consumer.Ack(context.Background(), messageView)
-			}
-			continue
-		}
-
-		ctx.Info("[mq service] consumer::receive message handler finish\n", x.H{
+	var err error
+	name := messageView.GetTag()
+	if *name == "" {
+		s.log.Error("[mq service] consumer::receive message without tag", errors.New("mq tag is nil"), x.H{
 			"topic": opt.TakeTopic(),
 			"group": opt.TakeGroup(),
-			"tag":   name,
 		})
 
 		_ = consumer.Ack(context.Background(), messageView)
+		return
 	}
-}
 
-func (s *defaultRocket) makeContext(message *mq.MessageView) (ctx x.Context) {
-	body := message.GetBody()
-	var js = struct {
-		Context *x.ContextData `json:"context"`
-	}{}
+	message := NewRocketMessage(messageView, s.logSource)
+	message.Init()
 
-	_ = json.Unmarshal(body, &js)
-	ctx = x.NewContextWithLog(s.logSource)
-	ctx.GiveContextData(js.Context)
+	ctx := message.takeContext()
+	ctx.GiveRemind("rocket_msg_id", messageView.GetMessageId())
+
+	handler := s.registry.Take(*name)
+
+	s.log.Info("[mq service] consumer::receive message handler accept", x.H{
+		"topic":  opt.TakeTopic(),
+		"group":  opt.TakeGroup(),
+		"tag":    name,
+		"msg_id": messageView.GetMessageId(),
+	})
+
+	if err = handler(ctx, message, messageView.GetMessageId()); err != nil {
+		s.log.Error("[mq service] consumer::receive message handler failed", err, x.H{
+			"topic":  opt.TakeTopic(),
+			"group":  opt.TakeGroup(),
+			"tag":    name,
+			"err":    err,
+			"msg_id": messageView.GetMessageId(),
+		})
+
+		if !opt.ErrorRetry() {
+			_ = consumer.Ack(context.Background(), messageView)
+		}
+		return
+	}
+
+	s.log.Info("[mq service] consumer::receive message handler finish\n", x.H{
+		"topic": opt.TakeTopic(),
+		"group": opt.TakeGroup(),
+		"tag":   name,
+	})
+
+	_ = consumer.Ack(context.Background(), messageView)
 	return
 }
 
 func (s *defaultRocket) bootConsumer(option IMessageQueueOption) {
-	pr.Yellow("rocket bootConsumer: %+v\n", option)
 	for i := 0; i < option.TakeNum(); i++ {
 		go s.Listen(option)
 	}
@@ -221,7 +216,6 @@ func (s *defaultRocket) bootConsumer(option IMessageQueueOption) {
 func (s *defaultRocket) Boot() error {
 
 	for _, option := range s.options {
-		pr.Yellow("rocket boot: %+v\n", option)
 		s.bootConsumer(option)
 	}
 
@@ -270,14 +264,13 @@ func (c *Producer) Stop() {
 	_ = c.source.GracefulStop()
 }
 
-func (c *Producer) Push(ctx x.Context, message *mq.Message) ([]*mq.SendReceipt, error) {
+func (c *Producer) Push(ctx x.Context, sendMessage *SendMessage) ([]*mq.SendReceipt, error) {
 	if _, err := c.Make(); err != nil {
 		return nil, err
 	}
 
-	if message.Topic == "" {
-		message.Topic = c.opt.TakeTopic()
-	}
+	message := sendMessage.Make()
+	message.Topic = c.opt.TakeTopic()
 
 	return c.source.Send(ctx.TakeContext(), message)
 }
