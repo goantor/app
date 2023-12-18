@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	mq "github.com/apache/rocketmq-clients/golang"
-	"github.com/apache/rocketmq-clients/golang/credentials"
 	"github.com/goantor/pr"
 	"github.com/goantor/rocket"
 	"github.com/goantor/x"
@@ -17,31 +16,38 @@ import (
 func CloseRocketLog() {
 	os.Setenv("mq.consoleAppender.enabled", "false")
 	os.Setenv("rocketmq.client.logLevel", "error")
+
 	mq.ResetLogger()
 }
 
-type MessageQueueHandler func(ctx x.Context, message IMessage, msgId string) error
-
-type IMessageQueueRoutes interface {
-	Register(name string, handle MessageQueueHandler)
-	Take(name string) (handle MessageQueueHandler)
+func InitRocketLog(configPath string) {
+	os.Setenv(mq.CLIENT_LOG_ROOT, configPath)
+	os.Setenv(mq.CLIENT_LOG_ROOT, configPath+"/mq/")
+	mq.ResetLogger()
 }
 
-type messageQueueRoutes struct {
-	routes map[string]MessageQueueHandler
+type RocketHandler func(ctx x.Context, message IMessage, msgId string) error
+
+type IRocketRoutes interface {
+	Register(name string, handle RocketHandler)
+	Take(name string) (handle RocketHandler)
 }
 
-func NewMessageQueueRoutes() IMessageQueueRoutes {
-	return &messageQueueRoutes{
-		routes: make(map[string]MessageQueueHandler),
+type rocketRoutes struct {
+	routes map[string]RocketHandler
+}
+
+func NewRocketRoutes() IRocketRoutes {
+	return &rocketRoutes{
+		routes: make(map[string]RocketHandler),
 	}
 }
 
-func (r messageQueueRoutes) Register(name string, handle MessageQueueHandler) {
+func (r rocketRoutes) Register(name string, handle RocketHandler) {
 	r.routes[name] = handle
 }
 
-func (r messageQueueRoutes) Take(name string) (handle MessageQueueHandler) {
+func (r rocketRoutes) Take(name string) (handle RocketHandler) {
 	var (
 		exists bool
 	)
@@ -54,13 +60,8 @@ func (r messageQueueRoutes) Take(name string) (handle MessageQueueHandler) {
 	return
 }
 
-type IMQ interface {
-	Register(name string, handle MessageQueueHandler)
-	Boot() error
-}
-
-type IMessageQueueOptions []IMessageQueueOption
-type IMessageQueueOption interface {
+type IRocketOptions []IRocketOption
+type IRocketOption interface {
 	rocket.IOption
 	TakeNum() int
 	TakeWait() time.Duration
@@ -69,28 +70,35 @@ type IMessageQueueOption interface {
 	ErrorRetry() bool
 }
 
-type MessageQueueConsumerHandler func(topic, group string, opt rocket.IOption) rocket.IConsumer
+type RocketConsumerHandler func(topic, group string, opt rocket.IOption) rocket.IConsumer
 
-func NewRocket(name string, log *logrus.Logger, registry IMessageQueueRoutes, options ...IMessageQueueOption) IService {
+type RocketRouteFunc func(route IRocketRoutes)
+
+func NewRocket(opt rocket.IConsumerOption, route RocketRouteFunc, log *logrus.Logger) IService {
 	return &defaultRocket{
-		name:      name,
-		options:   options,
-		registry:  registry,
+		option:    opt,
+		registry:  NewRocketRoutes(),
+		routeFunc: route,
+
 		log:       x.NewLogger(log),
 		logSource: log,
 	}
 }
 
 type defaultRocket struct {
-	name      string
-	options   IMessageQueueOptions
-	registry  IMessageQueueRoutes
+	option    rocket.IConsumerOption
+	registry  IRocketRoutes
 	log       x.ILogger
 	logSource *logrus.Logger
+	routeFunc RocketRouteFunc
+}
+
+func (s *defaultRocket) TakeConsumer() mq.SimpleConsumer {
+	return rocket.NewConsumer(s.option).Connect()
 }
 
 func (s *defaultRocket) TakeName() string {
-	return s.name
+	return s.option.TakeTopic()
 }
 
 func (s *defaultRocket) Shutdown(ctx context.Context) error {
@@ -103,7 +111,7 @@ func (s *defaultRocket) checkLog() {
 	}
 }
 
-func (s *defaultRocket) Listen(opt IMessageQueueOption) {
+func (s *defaultRocket) Listen(opt rocket.IConsumerOption) {
 	var (
 		err          error
 		messageViews []*mq.MessageView
@@ -115,7 +123,7 @@ func (s *defaultRocket) Listen(opt IMessageQueueOption) {
 		"topic": opt.TakeTopic(),
 	})
 
-	consumer = rocket.NewConsumer(opt.(rocket.IOption)).Connect(opt.TakeWait())
+	consumer = s.TakeConsumer()
 
 	for {
 		messageViews, err = consumer.Receive(context.Background(), opt.TakeMaxMessageNum(), opt.TakeInvisibleDuration())
@@ -143,7 +151,7 @@ func (s *defaultRocket) Listen(opt IMessageQueueOption) {
 	}
 }
 
-func (s *defaultRocket) Accept(consumer mq.SimpleConsumer, messageView *mq.MessageView, opt IMessageQueueOption) {
+func (s *defaultRocket) Accept(consumer mq.SimpleConsumer, messageView *mq.MessageView, opt rocket.IConsumerOption) {
 	defer func() {
 		if r := recover(); r != nil {
 			s.log.Error("[mq service] consumer::receive message handler panic", r.(error), x.H{
@@ -162,7 +170,7 @@ func (s *defaultRocket) Accept(consumer mq.SimpleConsumer, messageView *mq.Messa
 			"topic": opt.TakeTopic(),
 			"group": opt.TakeGroup(),
 		})
-
+		pr.Red("not found name\n")
 		_ = consumer.Ack(context.Background(), messageView)
 		return
 	}
@@ -170,6 +178,7 @@ func (s *defaultRocket) Accept(consumer mq.SimpleConsumer, messageView *mq.Messa
 	message := NewRocketMessage(messageView, s.logSource)
 	message.Init()
 
+	pr.Green("message: %+v\n", message)
 	ctx := message.takeContext()
 	ctx.GiveRemind("rocket_msg_id", messageView.GetMessageId())
 
@@ -191,9 +200,7 @@ func (s *defaultRocket) Accept(consumer mq.SimpleConsumer, messageView *mq.Messa
 			"msg_id": messageView.GetMessageId(),
 		})
 
-		if !opt.ErrorRetry() {
-			_ = consumer.Ack(context.Background(), messageView)
-		}
+		_ = consumer.Ack(context.Background(), messageView)
 		return
 	}
 
@@ -207,70 +214,21 @@ func (s *defaultRocket) Accept(consumer mq.SimpleConsumer, messageView *mq.Messa
 	return
 }
 
-func (s *defaultRocket) bootConsumer(option IMessageQueueOption) {
+func (s *defaultRocket) bootConsumer(option rocket.IConsumerOption) {
+	pr.Yellow("boot opt: %+v\n", option)
 	for i := 0; i < option.TakeNum(); i++ {
 		go s.Listen(option)
 	}
 }
 
 func (s *defaultRocket) Boot() error {
-
-	for _, option := range s.options {
-		s.bootConsumer(option)
-	}
+	s.routeFunc(s.registry)
+	fmt.Printf("rocket start\n\n")
+	s.bootConsumer(s.option)
 
 	return nil
 }
 
-type Producer struct {
-	opt    IMessageQueueOption
-	source mq.Producer
-}
-
-func NewMessage(body []byte) *mq.Message {
-	return &mq.Message{Body: body}
-}
-
-func NewProducer(opt IMessageQueueOption) *Producer {
-	return &Producer{opt: opt}
-}
-
-func (c *Producer) makeOptions() []mq.ProducerOption {
-	return []mq.ProducerOption{
-		mq.WithTopics(c.opt.TakeTopic()),
-	}
-}
-
-func (c *Producer) Make() (product *Producer, err error) {
-	if c.source == nil {
-		config := &mq.Config{
-			Endpoint: c.opt.TakeEndpoint(),
-			Credentials: &credentials.SessionCredentials{
-				AccessKey:    c.opt.TakeAccessKey(),
-				AccessSecret: c.opt.TakeSecretKey(),
-			},
-		}
-
-		config.ConsumerGroup = c.opt.TakeGroup()
-		if c.source, err = mq.NewProducer(config, c.makeOptions()...); err != nil {
-			return
-		}
-	}
-
-	return c, c.source.Start()
-}
-
-func (c *Producer) Stop() {
-	_ = c.source.GracefulStop()
-}
-
-func (c *Producer) Push(ctx x.Context, sendMessage *SendMessage) ([]*mq.SendReceipt, error) {
-	if _, err := c.Make(); err != nil {
-		return nil, err
-	}
-
-	message := sendMessage.Make()
-	message.Topic = c.opt.TakeTopic()
-
-	return c.source.Send(ctx.TakeContext(), message)
+func NewProducer(option rocket.IProducerOption) mq.Producer {
+	return rocket.NewProducer(option).Connect()
 }

@@ -28,6 +28,8 @@ type CrontabKind int
 
 type TaskHandler func(ctx x.Context) error
 
+type CrontabRouteFunc func(routes ICrontabRoutes)
+
 type ICrontabRoutes interface {
 	RegisterCron(name string, handler TaskHandler, spec string)
 	RegisterLoop(name string, handler TaskHandler, interval time.Duration)

@@ -8,6 +8,10 @@ import (
 	"time"
 )
 
+//type IRegistry
+
+type WebRouteRegistry map[string]WebRouteFunc
+
 type IWebOption interface {
 	TakeName() string
 	TakeHost() string
