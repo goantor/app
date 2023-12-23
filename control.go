@@ -64,7 +64,7 @@ func (c *control) addControl(cmd *cobra.Command) *control {
 	}
 }
 
-func (c *control) Group(name string, opts ...string) IGroup {
+func (c *control) Group(name string, opts ...string) IControlGroup {
 	opt := c.makeOption(opts...)
 
 	cmd := &cobra.Command{
@@ -77,7 +77,7 @@ func (c *control) Group(name string, opts ...string) IGroup {
 	return c.addControl(cmd)
 }
 
-func (c *control) Handler(name string, handler IHandler, opts ...string) {
+func (c *control) Handler(name string, handler IControlHandler, opts ...string) {
 	var param *pflag.FlagSet
 	opt := c.makeOption(opts...)
 	cmd := &cobra.Command{
@@ -100,7 +100,7 @@ func (c *control) Execute() error {
 	return c.command.Execute()
 }
 
-type ControlRouteFunc func(route IGroup)
+type ControlRouteFunc func(route IControlGroup)
 
 type ControlOption struct {
 	Long    string
@@ -108,18 +108,18 @@ type ControlOption struct {
 	Example string
 }
 
-type IHandler interface {
+type IControlHandler interface {
 	Params(set *pflag.FlagSet)
 	Handle(cmd *cobra.Command, param *pflag.FlagSet, args []string)
 }
 
-type IGroup interface {
-	Group(name string, opts ...string) IGroup
-	Handler(name string, handler IHandler, opts ...string)
+type IControlGroup interface {
+	Group(name string, opts ...string) IControlGroup
+	Handler(name string, handler IControlHandler, opts ...string)
 }
 
 type IControl interface {
-	IGroup
+	IControlGroup
 	AddRouteFunc(routeFunc ControlRouteFunc)
 	Execute() error
 }
