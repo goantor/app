@@ -50,7 +50,7 @@ func (c *control) makeOption(opts ...string) (opt ControlOption) {
 		opt.Long = opts[1]
 	}
 
-	if length >= 2 {
+	if length > 2 {
 		opt.Example = opts[2]
 	}
 
