@@ -30,11 +30,23 @@ func NewWeb(opt IWebOption, route WebRouteFunc) IService {
 	}
 }
 
+func NewWebService(opt IWebOption) *Web {
+	return &Web{
+		handle: gin.New(),
+		opt:    opt,
+	}
+}
+
 type Web struct {
 	handle *gin.Engine
 	opt    IWebOption
 	routes WebRouteFunc
 	server *http.Server
+}
+
+func (s *Web) BindRoutes(routeFunc WebRouteFunc) IService {
+	s.routes = routeFunc
+	return s
 }
 
 func (s *Web) TakeName() string {

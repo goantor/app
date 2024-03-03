@@ -75,7 +75,7 @@ type RocketConsumerHandler func(topic, group string, opt rocket.IOption) rocket.
 type RocketRouteFunc func(route IRocketRoutes)
 
 func NewRocket(opt rocket.IConsumerOption, route RocketRouteFunc, log *logrus.Logger) IService {
-	return &defaultRocket{
+	return &DefaultRocket{
 		option:    opt,
 		registry:  NewRocketRoutes(),
 		routeFunc: route,
@@ -85,7 +85,16 @@ func NewRocket(opt rocket.IConsumerOption, route RocketRouteFunc, log *logrus.Lo
 	}
 }
 
-type defaultRocket struct {
+func NewRocketServices(opt rocket.IConsumerOption, log *logrus.Logger) IService {
+	return &DefaultRocket{
+		option:    opt,
+		registry:  NewRocketRoutes(),
+		log:       x.NewLogger(log),
+		logSource: log,
+	}
+}
+
+type DefaultRocket struct {
 	option    rocket.IConsumerOption
 	registry  IRocketRoutes
 	log       x.ILogger
@@ -93,25 +102,30 @@ type defaultRocket struct {
 	routeFunc RocketRouteFunc
 }
 
-func (s *defaultRocket) TakeConsumer() mq.SimpleConsumer {
+func (s *DefaultRocket) BindRoutes(routeFunc RocketRouteFunc) IService {
+	s.routeFunc = routeFunc
+	return s
+}
+
+func (s *DefaultRocket) TakeConsumer() mq.SimpleConsumer {
 	return rocket.NewConsumer(s.option).Connect()
 }
 
-func (s *defaultRocket) TakeName() string {
+func (s *DefaultRocket) TakeName() string {
 	return s.option.TakeTopic()
 }
 
-func (s *defaultRocket) Shutdown(ctx context.Context) error {
+func (s *DefaultRocket) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-func (s *defaultRocket) checkLog() {
+func (s *DefaultRocket) checkLog() {
 	if s.log == nil {
 		panic("mq service must has x.ILogger log Logger")
 	}
 }
 
-func (s *defaultRocket) Listen(opt rocket.IConsumerOption) {
+func (s *DefaultRocket) Listen(opt rocket.IConsumerOption) {
 	var (
 		err          error
 		messageViews []*mq.MessageView
@@ -151,7 +165,7 @@ func (s *defaultRocket) Listen(opt rocket.IConsumerOption) {
 	}
 }
 
-func (s *defaultRocket) Accept(consumer mq.SimpleConsumer, messageView *mq.MessageView, opt rocket.IConsumerOption) {
+func (s *DefaultRocket) Accept(consumer mq.SimpleConsumer, messageView *mq.MessageView, opt rocket.IConsumerOption) {
 	defer func() {
 		if r := recover(); r != nil {
 			s.log.Error("[mq service] consumer::receive message handler panic", r.(error), x.H{
@@ -183,6 +197,10 @@ func (s *defaultRocket) Accept(consumer mq.SimpleConsumer, messageView *mq.Messa
 	ctx.GiveRemind("rocket_msg_id", messageView.GetMessageId())
 
 	handler := s.registry.Take(*name)
+	if handler == nil {
+		// 不处理了
+		return
+	}
 
 	s.log.Info("[mq service] consumer::receive message handler accept", x.H{
 		"topic":  opt.TakeTopic(),
@@ -214,14 +232,14 @@ func (s *defaultRocket) Accept(consumer mq.SimpleConsumer, messageView *mq.Messa
 	return
 }
 
-func (s *defaultRocket) bootConsumer(option rocket.IConsumerOption) {
+func (s *DefaultRocket) bootConsumer(option rocket.IConsumerOption) {
 	pr.Yellow("boot opt: %+v\n", option)
 	for i := 0; i < option.TakeNum(); i++ {
 		go s.Listen(option)
 	}
 }
 
-func (s *defaultRocket) Boot() error {
+func (s *DefaultRocket) Boot() error {
 	s.routeFunc(s.registry)
 	fmt.Printf("rocket start\n\n")
 	s.bootConsumer(s.option)

@@ -157,10 +157,22 @@ func NewCrontab(opt cron.Option, log *logrus.Logger, routes ICrontabRoutes) *Cro
 	}
 }
 
+func NewCrontabService(opt cron.Option, log *logrus.Logger) *Crontab {
+	return &Crontab{
+		cron: cron.New(opt),
+		log:  log,
+	}
+}
+
 type Crontab struct {
 	log    *logrus.Logger
 	cron   *cron.Cron
 	routes ICrontabRoutes
+}
+
+func (c *Crontab) BindRoutes(routes ICrontabRoutes) IService {
+	c.routes = routes
+	return c
 }
 
 func (c *Crontab) Shutdown(ctx context.Context) error {
