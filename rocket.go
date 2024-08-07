@@ -194,7 +194,6 @@ func (s *DefaultRocket) Accept(consumer mq.SimpleConsumer, messageView *mq.Messa
 
 	pr.Green("message: %+v\n", message)
 	ctx := message.takeContext()
-	ctx.GiveRemind("rocket_msg_id", messageView.GetMessageId())
 
 	handler := s.registry.Take(*name)
 	if handler == nil {
