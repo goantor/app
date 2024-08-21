@@ -2,11 +2,11 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/goantor/x"
 	"github.com/robfig/cron/v3"
-	"github.com/sirupsen/logrus"
-	"time"
+	"runtime/debug"
 )
 
 // cronTab :=
@@ -24,6 +24,26 @@ import (
 //	// 阻塞主线程停止
 //	select {}
 
+type ICrontabRouteRegistry interface {
+	Register(name string, handler TaskHandler)
+	Take(name string) (TaskHandler, bool)
+}
+
+func NewCrontabRouteRegistry() ICrontabRouteRegistry {
+	return CrontabRouteRegistry{}
+}
+
+type CrontabRouteRegistry map[string]TaskHandler
+
+func (c CrontabRouteRegistry) Take(name string) (TaskHandler, bool) {
+	handler, ok := c[name]
+	return handler, ok
+}
+
+func (c CrontabRouteRegistry) Register(name string, handler TaskHandler) {
+	c[name] = handler
+}
+
 type CrontabKind int
 
 type TaskHandler func(ctx x.Context) error
@@ -31,56 +51,24 @@ type TaskHandler func(ctx x.Context) error
 type CrontabRouteFunc func(routes ICrontabRoutes)
 
 type ICrontabRoutes interface {
-	RegisterCron(name string, handler TaskHandler, spec string)
-	RegisterLoop(name string, handler TaskHandler, interval time.Duration)
+	RegisterCron(route *CrontabRoute)
 	Take(name string) (task *CrontabRoute)
-	bind(cron *cron.Cron, log *logrus.Logger)
 	Valid() bool
-	RunLoop(log *logrus.Logger)
+	TakeTasks() map[string]*CrontabRoute
 }
 
 func NewCrontabRoutes() ICrontabRoutes {
 	return &CrontabRoutes{
 		routes: make(map[string]*CrontabRoute),
-		loops:  make(map[string]*LoopRoute),
 	}
 }
 
 type CrontabRoutes struct {
 	routes map[string]*CrontabRoute
-	loops  map[string]*LoopRoute
 }
 
 func (o *CrontabRoutes) Valid() bool {
 	return len(o.routes) > 0
-}
-
-func (o *CrontabRoutes) bind(cron *cron.Cron, log *logrus.Logger) {
-	for name, route := range o.routes {
-		if _, err := cron.AddFunc(route.Spec, o.makeCronHandler(name, route, log)); err != nil {
-			panic(fmt.Sprintf("route %s bind failed", name))
-		}
-	}
-}
-
-func (o *CrontabRoutes) makeCronHandler(name string, route *CrontabRoute, log *logrus.Logger) (handle func()) {
-	return func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.WithFields(logrus.Fields{
-					"error": r,
-					"name":  name,
-				}).Error("crontab run failed")
-			}
-		}()
-
-		ctx := x.NewContextWithLog(log)
-		ctx.GiveService("crontab")
-		ctx.GiveModule(name)
-		if err := route.Handler(ctx); err != nil {
-			ctx.Error(fmt.Sprintf("[cron::%s] task found error", route.Name), err, nil)
-		}
-	}
 }
 
 func (o *CrontabRoutes) Take(name string) (task *CrontabRoute) {
@@ -93,113 +81,83 @@ func (o *CrontabRoutes) Take(name string) (task *CrontabRoute) {
 	return
 }
 
-func (o *CrontabRoutes) RegisterCron(name string, handler TaskHandler, spec string) {
-	o.routes[name] = &CrontabRoute{
-		Name:    name,
-		Handler: handler,
-		Spec:    spec,
-	}
+func (o *CrontabRoutes) RegisterCron(route *CrontabRoute) {
+	o.routes[route.Name] = route
 }
-
-func (o *CrontabRoutes) RegisterLoop(name string, handler TaskHandler, interval time.Duration) {
-	o.loops[name] = &LoopRoute{
-		Name:     name,
-		Handler:  handler,
-		Interval: interval,
-	}
-}
-
-func (o *CrontabRoutes) RunLoop(log *logrus.Logger) {
-	for _, route := range o.loops {
-		go route.Run(log)
-	}
+func (o *CrontabRoutes) TakeTasks() map[string]*CrontabRoute {
+	return o.routes
 }
 
 type CrontabRoute struct {
-	Name    string
-	Handler TaskHandler
-	Spec    string
+	Name             string
+	Handler          TaskHandler
+	Spec             string
+	StillRunningType int
 }
 
-type LoopRoute struct {
-	Name     string
-	Handler  TaskHandler
-	Interval time.Duration
-}
+func (cr *CrontabRoute) makeCronHandler(name string, route *CrontabRoute, log x.ILogger) (handle func()) {
+	return func() {
+		defer func() {
+			if r := recover(); r != nil {
+				err := errors.New(fmt.Sprintf("crontab catch error: %v", r))
+				log.Error("crontab run failed", err, x.H{
+					"error":      r,
+					"debugStack": string(debug.Stack()),
+					"name":       name,
+				})
+			}
+		}()
 
-func (r LoopRoute) Run(log *logrus.Logger) {
-	defer func() {
-		if err := recover(); err != nil {
-			log.WithFields(logrus.Fields{
-				"error": err,
-			}).Error(fmt.Sprintf("[loop::%s] task found error", r.Name))
+		ctx := x.NewContext(log)
+		ctx.GiveService("crontab")
+		ctx.GiveModule(name)
+		if err := route.Handler(ctx); err != nil {
+			ctx.Error(fmt.Sprintf("[cron::%s] task found error", route.Name), err, nil)
 		}
-
-		r.Run(log)
-	}()
-
-	for {
-		ctx := x.NewContextWithLog(log)
-		ctx.GiveService("Loop")
-		ctx.GiveModule(r.Name)
-		if err := r.Handler(ctx); err != nil {
-			ctx.Error(fmt.Sprintf("[loop::%s] task found error", r.Name), err, nil)
-		}
-		time.Sleep(r.Interval)
 	}
 }
 
-func NewCrontab(opt cron.Option, log *logrus.Logger, routes ICrontabRoutes) *Crontab {
+func NewCrontab(cronName string, log x.ILogger, routes ICrontabRoutes, opts ...cron.Option) *Crontab {
 	return &Crontab{
-		cron:   cron.New(opt),
+		name:   cronName,
+		cron:   cron.New(opts...),
 		log:    log,
 		routes: routes,
 	}
 }
 
-func NewCrontabService(opt cron.Option, log *logrus.Logger) *Crontab {
-	return &Crontab{
-		cron: cron.New(opt),
-		log:  log,
-	}
-}
-
 type Crontab struct {
-	log    *logrus.Logger
+	name   string
+	log    x.ILogger
 	cron   *cron.Cron
 	routes ICrontabRoutes
-}
-
-func (c *Crontab) BindRoutes(routes ICrontabRoutes) IService {
-	c.routes = routes
-	return c
 }
 
 func (c *Crontab) Shutdown(ctx context.Context) error {
 	c.cron.Stop()
 	return nil
 }
-
 func (c *Crontab) TakeName() string {
-	return "crontab"
+	return fmt.Sprintf("crontab-%s", c.name)
 }
-
-func (c *Crontab) RegisterCron(name string, handler TaskHandler, spec string) {
-	c.routes.RegisterCron(name, handler, spec)
-}
-
-func (c *Crontab) RegisterLoop(name string, handler TaskHandler, interval time.Duration) {
-	c.routes.RegisterLoop(name, handler, interval)
-}
-
-func (c *Crontab) Registers(routes ICrontabRoutes) {
-	c.routes = routes
-}
-
 func (c *Crontab) Boot() (err error) {
-	c.routes.bind(c.cron, c.log)
+	c.bind()
 	c.cron.Start()
-
-	c.routes.RunLoop(c.log)
 	return
+}
+
+func (c *Crontab) bind() {
+	jobIdMapName := make(map[cron.EntryID]string)
+	for name, route := range c.routes.TakeTasks() {
+		entryId, err := c.cron.AddFunc(route.Spec, route.makeCronHandler(name, route, c.log))
+		if err != nil {
+			panic(fmt.Sprintf("route %s bind failed", name))
+		}
+		jobIdMapName[entryId] = name
+	}
+
+	c.log.Info("cron 记录 entityId 到 entityIdMap", x.H{
+		"cron_name": c.name,
+		"job_map":   jobIdMapName,
+	})
 }
