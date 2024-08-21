@@ -52,40 +52,38 @@ type CrontabRouteFunc func(routes ICrontabRoutes)
 
 type ICrontabRoutes interface {
 	RegisterCron(route *CrontabRoute)
-	Take(name string) (task *CrontabRoute)
-	Valid() bool
-	TakeTasks() map[string]*CrontabRoute
+	HasNext() bool
+	Next() *CrontabRoute
 }
 
 func NewCrontabRoutes() ICrontabRoutes {
 	return &CrontabRoutes{
-		routes: make(map[string]*CrontabRoute),
+		routes: make([]*CrontabRoute, 0),
+		index:  0,
 	}
 }
 
 type CrontabRoutes struct {
-	routes map[string]*CrontabRoute
-}
-
-func (o *CrontabRoutes) Valid() bool {
-	return len(o.routes) > 0
-}
-
-func (o *CrontabRoutes) Take(name string) (task *CrontabRoute) {
-	var exists bool
-
-	if task, exists = o.routes[name]; !exists {
-		panic(fmt.Sprintf("task %s not found", name))
-	}
-
-	return
+	routes []*CrontabRoute
+	index  int
 }
 
 func (o *CrontabRoutes) RegisterCron(route *CrontabRoute) {
-	o.routes[route.Name] = route
+	o.routes = append(o.routes, route)
 }
-func (o *CrontabRoutes) TakeTasks() map[string]*CrontabRoute {
-	return o.routes
+
+func (o *CrontabRoutes) HasNext() bool {
+	return o.index < len(o.routes)
+}
+
+func (o *CrontabRoutes) Next() *CrontabRoute {
+	if o.HasNext() {
+		route := o.routes[o.index]
+		o.index++
+		return route
+	}
+
+	return nil
 }
 
 type CrontabRoute struct {
@@ -148,12 +146,14 @@ func (c *Crontab) Boot() (err error) {
 
 func (c *Crontab) bind() {
 	jobIdMapName := make(map[cron.EntryID]string)
-	for name, route := range c.routes.TakeTasks() {
-		entryId, err := c.cron.AddFunc(route.Spec, route.makeCronHandler(name, route, c.log))
+
+	for c.routes.HasNext() {
+		route := c.routes.Next()
+		entryId, err := c.cron.AddFunc(route.Spec, route.makeCronHandler(c.name, route, c.log))
 		if err != nil {
-			panic(fmt.Sprintf("route %s bind failed", name))
+			panic(fmt.Sprintf("route %s bind failed", c.name))
 		}
-		jobIdMapName[entryId] = name
+		jobIdMapName[entryId] = route.Name
 	}
 
 	c.log.Info("cron 记录 entityId 到 entityIdMap", x.H{
