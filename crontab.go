@@ -24,6 +24,19 @@ import (
 //	// 阻塞主线程停止
 //	select {}
 
+type TaskRouteName string
+
+func (t TaskRouteName) String() string {
+	return string(t)
+}
+
+// TaskAction 定义任务执行的动作
+type TaskAction int
+
+func (a TaskAction) Int() int {
+	return int(a)
+}
+
 type ICrontabRouteRegistry interface {
 	Register(name string, handler TaskHandler)
 	Take(name string) (TaskHandler, bool)
